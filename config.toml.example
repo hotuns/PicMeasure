@@ -1,0 +1,57 @@
+output_unit = "cm"
+image_formats = ["jpg", "jpeg", "png", "tiff", "tif"]
+
+[ball]
+known_diameter_cm = 4.0
+# Orange-red HSV thresholds (OpenCV hue range 0-179, wraps around 0/179).
+hsv_hue_low_max = 20
+hsv_hue_high_min = 165
+hsv_sat_min = 120
+hsv_val_min = 80
+morph_kernel_size = 5
+# HoughCircles parameters; tune to image scale.
+hough_dp = 1.2
+hough_min_dist = 50
+hough_param1 = 100
+hough_param2 = 20
+hough_min_radius = 8
+hough_max_radius = 200
+min_confidence = 0.3
+min_circularity = 0.30
+min_edge_support = 0.05
+min_area_ratio = 0.45
+max_candidates = 12
+
+[precision]
+magnification = 8
+magnifier_radius_px = 16
+snap_radius_px = 12
+min_edge_score = 20.0
+
+[logging]
+level = "INFO"
+
+# Example stereo calibration (place in a separate file and pass via --stereo-config).
+# Both cameras must share the same focal length.
+# [stereo]
+# enabled = true
+# focal_length_px = 1200.0
+# principal_point = [640.0, 480.0]
+# distortion_coefficients = [0.0, 0.0, 0.0, 0.0, 0.0]
+# rotation = [
+#   [1.0, 0.0, 0.0],
+#   [0.0, 1.0, 0.0],
+#   [0.0, 0.0, 1.0]
+# ]
+# translation = [12.0, 0.0, 0.0]  # cm
+# baseline = 12.0
+# unit = "cm"
+# alpha = 0.0
+#
+# [stereo.correspondence]
+# window_size = 31
+# search_range_px = 1200
+# uniqueness_ratio = 0.8
+# gradient_weight = 0.35
+# min_score = 0.35
+# subpixel_refinement = true

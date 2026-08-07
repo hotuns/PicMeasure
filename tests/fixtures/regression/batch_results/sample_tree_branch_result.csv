@@ -1,0 +1,9 @@
+image_path,branch_id,unit,timestamp,measurement_type,value
+tests\fixtures\regression\sample_tree_branch.jpg,1,mm,2026-04-27T23:15:55.812284+00:00,length,2.78
+tests\fixtures\regression\sample_tree_branch.jpg,1,mm,2026-04-27T23:15:55.812284+00:00,width_mean,0.34
+tests\fixtures\regression\sample_tree_branch.jpg,1,mm,2026-04-27T23:15:55.812284+00:00,width_min,0.2
+tests\fixtures\regression\sample_tree_branch.jpg,1,mm,2026-04-27T23:15:55.812284+00:00,width_max,0.82
+tests\fixtures\regression\sample_tree_branch.jpg,2,mm,2026-04-27T23:15:55.812284+00:00,length,33.16
+tests\fixtures\regression\sample_tree_branch.jpg,2,mm,2026-04-27T23:15:55.812284+00:00,width_mean,1.55
+tests\fixtures\regression\sample_tree_branch.jpg,2,mm,2026-04-27T23:15:55.812284+00:00,width_min,1.2
+tests\fixtures\regression\sample_tree_branch.jpg,2,mm,2026-04-27T23:15:55.812284+00:00,width_max,1.6

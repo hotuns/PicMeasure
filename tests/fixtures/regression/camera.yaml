@@ -1,0 +1,8 @@
+distortion_coefficients:
+- -0.12
+- 0.08
+- 0.001
+- -0.0005
+- 0.0
+focal_length_mm: 24.0
+sensor_width_mm: 23.5

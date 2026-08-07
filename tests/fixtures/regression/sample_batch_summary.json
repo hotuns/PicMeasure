@@ -1,0 +1,29 @@
+{
+  "batch_id": "550e8400-e29b-41d4-a716-446655440000",
+  "started_at": "2026-04-28T12:00:00+00:00",
+  "completed_at": "2026-04-28T12:05:00+00:00",
+  "total_images": 3,
+  "succeeded": 2,
+  "failed": 1,
+  "skipped": 0,
+  "sessions": [
+    {
+      "image_path": "tests/fixtures/regression/tree_01.jpg",
+      "ruler_detected": true,
+      "branch_count": 2,
+      "error": null
+    },
+    {
+      "image_path": "tests/fixtures/regression/tree_02.jpg",
+      "ruler_detected": true,
+      "branch_count": 1,
+      "error": null
+    },
+    {
+      "image_path": "tests/fixtures/regression/tree_03.jpg",
+      "ruler_detected": false,
+      "branch_count": 0,
+      "error": "Ruler detection failed"
+    }
+  ]
+}
