@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import mimetypes
 import tomllib
 import uuid
 from dataclasses import dataclass
@@ -66,6 +67,12 @@ class StereoPointPayload(PointPayload):
 
 SESSIONS: dict[str, WebSession] = {}
 STATIC_DIR = Path(__file__).with_name("web_static")
+
+mimetypes.add_type("application/javascript", ".js")
+mimetypes.add_type("text/css", ".css")
+mimetypes.add_type("application/json", ".json")
+mimetypes.add_type("image/svg+xml", ".svg")
+mimetypes.add_type("application/wasm", ".wasm")
 
 app = FastAPI(title="PicMeasure", docs_url="/api/docs", redoc_url=None)
 
