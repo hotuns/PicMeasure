@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   Camera,
+  ChartNoAxesCombined,
   ChevronLeft,
   ChevronRight,
   CircleDot,
+  Database,
   Download,
   Eye,
   EyeOff,
@@ -14,6 +16,7 @@ import {
   Maximize2,
   MousePointer2,
   Plus,
+  RefreshCw,
   Ruler,
   Save,
   ScanLine,
@@ -28,7 +31,7 @@ import {
 } from "lucide-react";
 import Konva from "konva";
 import { Circle, Image as KonvaImage, Layer, Line, Stage, Text } from "react-konva";
-import { calibrateStereo, createMonocular, createStereo, imageUrl, snapPoint, stereoPoint } from "./api";
+import { calibrateStereo, createMonocular, createRemoteMonocular, createRemoteStereo, createStereo, deleteSavedAnnotation, deviceExportUrl, imageUrl, listRemoteCaptures, listSavedAnnotations, loadSeries, remoteImageUrl, reopenSavedAnnotation, saveAnnotation, saveAnnotationImage, snapPoint, stereoPoint } from "./api";
 import type {
   AppMode,
   BallCandidate,
@@ -38,6 +41,10 @@ import type {
   Point,
   Point3D,
   PointPreview,
+  RemoteCapture,
+  RemoteCaptureResponse,
+  SavedAnnotationRecord,
+  SeriesPoint,
   SessionResponse,
   StereoCalibrationResult,
   ViewName,
@@ -187,7 +194,7 @@ function UploadScreen({
         if (!files.left || !files.right) {
           throw new Error("请选择左右图");
         }
-        onReady(await createStereo(files.left, files.right), [files.left.name, files.right.name]);
+        onReady(await createStereo(files.left, files.right, files.calibration), [files.left.name, files.right.name]);
       } else {
         if (calibrationFiles.left.length !== calibrationFiles.right.length) {
           throw new Error("左右标定图数量必须一致，并按相同顺序配对");
@@ -246,7 +253,14 @@ function UploadScreen({
                 selected={files.right?.name}
                 onFiles={(list) => setFiles((current) => ({ ...current, right: list[0] }))}
               />
-              <p className="settings-hint">双目标定自动使用项目根目录的 stereo.toml。</p>
+              <FileDrop
+                label="标定文件（可选）"
+                hint="默认使用项目根目录 stereo.toml"
+                accept=".toml,application/toml,text/plain"
+                selected={files.calibration?.name}
+                onFiles={(list) => setFiles((current) => ({ ...current, calibration: list[0] }))}
+              />
+              <p className="settings-hint">不选择时使用项目根目录 stereo.toml；这里选择的文件只用于本次会话。</p>
             </>
           ) : (
             <>
@@ -378,9 +392,13 @@ interface WorkbenchProps {
   session: SessionResponse;
   names: string[];
   onClose: () => void;
+  onSaveNext?: () => Promise<void>;
+  onSaved?: () => void;
+  nextMeasurementLabel?: string;
+  onSkipNext?: () => Promise<void>;
 }
 
-function Workbench({ session, names, onClose }: WorkbenchProps) {
+function Workbench({ session, names, onClose, onSaveNext, onSaved, nextMeasurementLabel, onSkipNext }: WorkbenchProps) {
   const [measureMode, setMeasureMode] = useState<MeasureMode>("length");
   const [view, setView] = useState<ViewName>(session.mode === "stereo" ? "left" : "primary");
   const [tool, setTool] = useState<"select" | "pan">("select");
@@ -391,15 +409,32 @@ function Workbench({ session, names, onClose }: WorkbenchProps) {
   const [pendingManualLeft, setPendingManualLeft] = useState<PointPreview | null>(null);
   const [preview, setPreview] = useState<PointPreview | null>(null);
   const [diameterFirst, setDiameterFirst] = useState<PointPreview | null>(null);
-  const [branches, setBranches] = useState<BranchResult[]>([
-    { id: 1, points: [], rightPoints: [], points3d: [], diameters: [] },
-  ]);
+  const [branches, setBranches] = useState<BranchResult[]>(() => session.existing_branches?.length
+    ? session.existing_branches.map((branch, index) => ({
+      ...branch,
+      id: branch.id ?? index + 1,
+      points: branch.points ?? [],
+      rightPoints: branch.rightPoints ?? [],
+      points3d: branch.points3d ?? [],
+      diameters: branch.diameters ?? [],
+    }))
+    : [{ id: 1, key: "树枝", points: [], rightPoints: [], points3d: [], diameters: [] }]);
   const [candidateIndex, setCandidateIndex] = useState(0);
-  const [confirmedBalls, setConfirmedBalls] = useState<Partial<Record<ViewName, BallCandidate>>>({});
+  const [confirmedBalls, setConfirmedBalls] = useState<Partial<Record<ViewName, BallCandidate>>>(
+    session.mode === "monocular" && session.saved_calibration
+      ? { primary: session.saved_calibration }
+      : {},
+  );
   const [calibrationSkipped, setCalibrationSkipped] = useState(false);
   const [manualBall, setManualBall] = useState(false);
   const [manualBallPoints, setManualBallPoints] = useState<Point[]>([]);
-  const [message, setMessage] = useState(session.mode === "monocular" ? "请确认参考球后开始测量" : "点击左图开始选点，右图可调整匹配位置");
+  const [message, setMessage] = useState(
+    session.mode === "monocular"
+      ? session.saved_calibration
+        ? `已应用 ${session.saved_calibration.image_key ?? "当前相机"} 的固定参考球标定`
+        : "请确认参考球后开始测量"
+      : "点击左图开始选点，右图可调整匹配位置",
+  );
   const [error, setError] = useState("");
   const [toast, setToast] = useState<ToastState | null>(null);
   const [hoverPoint, setHoverPoint] = useState<Point | null>(null);
@@ -665,7 +700,7 @@ function Workbench({ session, names, onClose }: WorkbenchProps) {
   const clearMeasurements = useCallback(() => {
     const exists = branches.some((branch) => branch.points.length > 0 || branch.diameters.length > 0);
     if (exists && !window.confirm("清除全部已有测量？此操作无法撤销。")) return;
-    setBranches([{ id: 1, points: [], rightPoints: [], points3d: [], diameters: [] }]);
+    setBranches([{ id: 1, key: "树枝", points: [], rightPoints: [], points3d: [], diameters: [] }]);
     cancelPending();
     setSelectedKey(null);
     setMessage("已清除全部测量");
@@ -767,10 +802,41 @@ function Workbench({ session, names, onClose }: WorkbenchProps) {
 
   const newBranch = () => {
     setBranches((current) => [...current, {
-      id: current.length + 1, points: [], rightPoints: [], points3d: [], diameters: [],
+      id: current.length + 1, key: `叶片${current.length}`, points: [], rightPoints: [], points3d: [], diameters: [],
     }]);
     cancelPending();
     notify("已新建分支", "info");
+  };
+
+  const branchPayload = () => visibleBranches.map((branch) => ({
+    ...branch,
+    branch_id: branch.id,
+    vertices: branch.points,
+    vertices_right: branch.rightPoints,
+    vertices_3d: branch.points3d,
+    length_units: session.mode === "stereo"
+      ? polylineLength(branch.points3d)
+      : polylineLength(branch.points) / (monoScale ?? 1),
+    diameter_measurements: branch.diameters,
+    unit: session.unit,
+  }));
+
+  const saveLocal = async (continueNext = false) => {
+    try {
+      const result = await saveAnnotation({
+        sessionId: session.session_id,
+        capturedAt: session.source?.captured_at,
+        branches: branchPayload(),
+        calibration: confirmedBalls,
+      });
+      const annotated = await renderAnnotatedBlob();
+      if (annotated) await saveAnnotationImage(session.session_id, annotated);
+      notify(`测量数据和标注图已保存：${result.path}`, "success");
+      onSaved?.();
+      if (continueNext && onSaveNext) await onSaveNext();
+    } catch (reason) {
+      notify(reason instanceof Error ? reason.message : "保存失败", "error");
+    }
   };
 
   const exportResult = () => {
@@ -780,60 +846,54 @@ function Workbench({ session, names, onClose }: WorkbenchProps) {
       images: session.mode === "monocular" ? { primary: names[0] } : { left: names[0], right: names[1] },
       unit: session.unit,
       calibration: confirmedBalls,
-      branches: visibleBranches.map((branch) => ({
-        branch_id: branch.id,
-        vertices: branch.points,
-        vertices_right: branch.rightPoints,
-        vertices_3d: branch.points3d,
-        length_units: session.mode === "stereo"
-          ? polylineLength(branch.points3d)
-          : polylineLength(branch.points) / (monoScale ?? 1),
-        diameter_measurements: branch.diameters,
-        unit: session.unit,
-      })),
+      branches: branchPayload(),
     };
     download("picmeasure_result.json", JSON.stringify(payload, null, 2));
     notify("测量结果已导出", "success");
   };
 
-  const exportCanvas = () => {
+  const renderAnnotatedBlob = async (): Promise<Blob | null> => {
     const leftStage = stageRef.current;
-    if (!leftStage) return;
-    const saveUri = (uri: string) => {
-      const anchor = document.createElement("a");
-      anchor.href = uri;
-      anchor.download = "picmeasure_annotated.png";
-      anchor.click();
-    };
-    if (session.mode !== "stereo" || !rightStageRef.current) {
-      const uri = leftStage.toDataURL({ pixelRatio: 2 });
-      if (!uri) return;
-      saveUri(uri);
-      notify("标注图已导出", "success");
-      return;
-    }
-    const leftUri = leftStage.toDataURL({ pixelRatio: 2 });
-    const rightUri = rightStageRef.current.toDataURL({ pixelRatio: 2 });
-    if (!leftUri || !rightUri) return;
-    const leftImageElement = new window.Image();
-    leftImageElement.onload = () => {
-      const rightImageElement = new window.Image();
-      rightImageElement.onload = () => {
-        const canvas = document.createElement("canvas");
-        canvas.width = leftImageElement.width + rightImageElement.width;
-        canvas.height = Math.max(leftImageElement.height, rightImageElement.height);
-        const context = canvas.getContext("2d");
-        if (!context) return;
-        context.fillStyle = "#111312";
-        context.fillRect(0, 0, canvas.width, canvas.height);
-        context.drawImage(leftImageElement, 0, 0);
-        context.drawImage(rightImageElement, leftImageElement.width, 0);
-        saveUri(canvas.toDataURL("image/png"));
-        notify("标注图已导出（左右图）", "success");
-      };
-      rightImageElement.src = rightUri;
-    };
-    leftImageElement.src = leftUri;
+    if (!leftStage) return null;
+    const load = (src: string) => new Promise<HTMLImageElement>((resolve, reject) => {
+      const image = new window.Image(); image.onload = () => resolve(image); image.onerror = reject; image.src = src;
+    });
+    const leftExport = await load(leftStage.toDataURL({ pixelRatio: 2 }));
+    const rightExport = session.mode === "stereo" && rightStageRef.current
+      ? await load(rightStageRef.current.toDataURL({ pixelRatio: 2 }))
+      : null;
+    const imageWidth = leftExport.width + (rightExport?.width ?? 0);
+    const imageHeight = Math.max(leftExport.height, rightExport?.height ?? 0);
+    const rows = Math.max(1, visibleBranches.length);
+    const legendHeight = 46 + rows * 34;
+    const canvas = document.createElement("canvas");
+    canvas.width = imageWidth;
+    canvas.height = imageHeight + legendHeight;
+    const context = canvas.getContext("2d");
+    if (!context) return null;
+    context.fillStyle = "#111312"; context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(leftExport, 0, 0);
+    if (rightExport) context.drawImage(rightExport, leftExport.width, 0);
+    context.fillStyle = "#171918"; context.fillRect(0, imageHeight, canvas.width, legendHeight);
+    context.fillStyle = "#35c98b"; context.font = "600 22px sans-serif";
+    context.fillText(`PicMeasure · ${names.join(" / ")}`, 24, imageHeight + 30);
+    visibleBranches.forEach((branch, index) => {
+      const length = session.mode === "stereo" ? polylineLength(branch.points3d) : polylineLength(branch.points) / (monoScale ?? 1);
+      const diameterText = branch.diameters.length ? ` · 直径 ${branch.diameters.map((item) => item.value.toFixed(2)).join(", ")} ${session.unit}` : "";
+      context.fillStyle = "#e8ece9"; context.font = "20px sans-serif";
+      context.fillText(`${branch.key || `分支${branch.id}`}：长度 ${length.toFixed(2)} ${session.unit}${diameterText}`, 24, imageHeight + 64 + index * 34);
+    });
+    return new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+  };
+
+  const exportCanvas = async () => {
+    const blob = await renderAnnotatedBlob();
+    if (!blob) return;
+    const uri = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = uri; anchor.download = "picmeasure_annotated.png"; anchor.click();
+    URL.revokeObjectURL(uri);
+    notify("带 key 和测量值的标注图已导出", "success");
   };
 
   const wheel = (event: Konva.KonvaEventObject<WheelEvent>) => {
@@ -980,7 +1040,10 @@ function Workbench({ session, names, onClose }: WorkbenchProps) {
         <label className="toggle" title="边缘吸附 (A)"><input type="checkbox" checked={snapping} onChange={(event) => setSnapping(event.target.checked)} /><span />吸附</label>
         {session.mode === "stereo" && <label className="toggle" title="自动匹配失败时手动指定右图对应点"><input type="checkbox" checked={manualMatch} onChange={(event) => setManualMatch(event.target.checked)} /><span />手动匹配</label>}
         <div className="topbar-spacer" />
-        <button className="command quiet" onClick={exportCanvas} title="导出带标注的图片"><Download size={16} />标注图</button>
+        {onSkipNext && <button className="command quiet skip-command" onClick={() => void onSkipNext()} title="不保存当前图片，沿用筛选条件进入下一张"><ChevronRight size={16} />{nextMeasurementLabel ? `跳过，下一张 ${nextMeasurementLabel}` : "跳过，返回列表"}</button>}
+        <button className="command quiet" onClick={() => void exportCanvas()} title="导出带 key 和数值的标注图片"><Download size={16} />标注图</button>
+        <button className="command quiet" onClick={() => void saveLocal()} title="保存到本机数据目录"><Database size={16} />保存本地</button>
+        {onSaveNext && <button className="command" onClick={() => void saveLocal(true)} title="沿用列表筛选条件进入下一张"><ChevronRight size={16} />{nextMeasurementLabel ? `保存并下一张 ${nextMeasurementLabel}` : "保存并返回列表"}</button>}
         <button className="command" onClick={exportResult} title="导出 JSON 测量结果"><Save size={16} />结果</button>
         <button className="icon-close" title="关闭当前会话" onClick={onClose}><X size={18} /></button>
       </header>
@@ -1023,7 +1086,7 @@ function Workbench({ session, names, onClose }: WorkbenchProps) {
             {confirmedBalls[view] && (
               <div className="confirmed-calibration">
                 <Check size={18} />
-                <div><strong>{confirmedBalls[view]!.pixels_per_unit.toFixed(2)} px/{session.unit}</strong><span>{confirmedBalls[view]!.method === "manual" ? "手动校准" : "候选已确认"}</span></div>
+                <div><strong>{confirmedBalls[view]!.pixels_per_unit.toFixed(2)} px/{session.unit}</strong><span>{session.saved_calibration && confirmedBalls[view] === session.saved_calibration ? `固定标定 · ${session.saved_calibration.image_key}` : confirmedBalls[view]!.method === "manual" ? "手动校准" : "候选已确认"}</span></div>
                 <button title="重新校准" onClick={() => resetBall(view)}><Undo2 size={14} /></button>
               </div>
             )}
@@ -1049,6 +1112,14 @@ function Workbench({ session, names, onClose }: WorkbenchProps) {
             <div className="section-title"><span>图像</span></div>
             <div className="file-summary"><strong>{view === "right" ? names[1] : names[0]}</strong><small>{imageMeta.width} × {imageMeta.height} px</small></div>
           </div>
+          {session.mode === "stereo" && session.alignment && (
+            <div className="panel-section">
+              <div className="section-title"><span>双目对齐</span><small>{session.alignment.source === "features" ? "当前图像特征" : "配置外参"}</small></div>
+              <div className="candidate-meta"><span>特征 / 内点</span><strong>{session.alignment.matches} / {session.alignment.inliers}</strong></div>
+              <div className="candidate-meta"><span>纵向误差 P50</span><strong>{session.alignment.median_vertical_error_px.toFixed(2)} px</strong></div>
+              <div className="candidate-meta"><span>纵向误差 P90</span><strong>{session.alignment.p90_vertical_error_px.toFixed(2)} px</strong></div>
+            </div>
+          )}
         </div>
       </aside>
 
@@ -1077,7 +1148,12 @@ function Workbench({ session, names, onClose }: WorkbenchProps) {
             return (
               <section className="branch-section" key={branch.id}>
                 <header>
-                  <strong>分支 {branch.id}</strong>
+                  <input
+                    className="branch-key-input"
+                    value={branch.key}
+                    placeholder="例如：树枝、叶片1"
+                    onChange={(event) => setBranches((current) => current.map((item) => item.id === branch.id ? { ...item, key: event.target.value } : item))}
+                  />
                   <div className="branch-actions">
                     <span>{branch.points.length} 点 · {branch.diameters.length} 直径</span>
                     <button title="删除此分支" onClick={() => removeBranch(branch.id)}><Trash2 size={13} /></button>
@@ -1142,15 +1218,226 @@ function Workbench({ session, names, onClose }: WorkbenchProps) {
   );
 }
 
+function TrendChart({ series, onRemeasure }: { series: Record<string, SeriesPoint[]>; onRemeasure: (point: SeriesPoint) => void }) {
+  const [selected, setSelected] = useState<{ key: string; point: SeriesPoint } | null>(null);
+  const entries = Object.entries(series);
+  if (!entries.length) return <div className="remote-empty">保存带 key 的测量结果后，这里会显示时间曲线。</div>;
+  const colors = ["#35c98b", "#f2b84b", "#74a7ff", "#ff7b72", "#c58cff"];
+  const values = entries.flatMap(([, points]) => points.map((point) => point.value));
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = Math.max(max - min, 1);
+  return (
+    <div className="trend-linked-view">
+      <div className="trend-card">
+      <svg viewBox="0 0 900 380" role="img" aria-label="语义测量曲线">
+        {[0, 1, 2, 3, 4].map((line) => <line key={line} x1="60" y1={30 + line * 75} x2="875" y2={30 + line * 75} className="chart-grid" />)}
+        {entries.map(([key, points], seriesIndex) => {
+          const path = points.map((point, index) => {
+            const x = 60 + (points.length === 1 ? 407 : index * 815 / (points.length - 1));
+            const y = 330 - ((point.value - min) / range) * 280;
+            return `${index ? "L" : "M"}${x},${y}`;
+          }).join(" ");
+          return <g key={key}><path d={path} fill="none" stroke={colors[seriesIndex % colors.length]} strokeWidth="3" />{points.map((point, index) => { const x = 60 + (points.length === 1 ? 407 : index * 815 / (points.length - 1)); const y = 330 - ((point.value - min) / range) * 280; const active = selected?.key === key && selected.point.timestamp === point.timestamp && selected.point.target === point.target; return <circle className="chart-point" key={`${point.timestamp}-${point.target}-${index}`} cx={x} cy={y} r={active ? 9 : 6} fill={colors[seriesIndex % colors.length]} stroke={active ? "#ffffff" : "#171918"} strokeWidth={active ? 3 : 2} onClick={() => setSelected({ key, point })}><title>{key} {point.value.toFixed(2)} {point.unit} · {point.timestamp}</title></circle>; })}</g>;
+        })}
+        <text x="12" y="50" className="chart-label">{max.toFixed(1)}</text>
+        <text x="12" y="334" className="chart-label">{min.toFixed(1)}</text>
+      </svg>
+      <div className="chart-legend">{entries.map(([key], index) => <span key={key}><i style={{ background: colors[index % colors.length] }} />{key}</span>)}</div>
+      <p className="chart-help">点击曲线上的数据点，在下方查看对应标注图。</p>
+      </div>
+      <section className="trend-image-panel">
+        {selected ? <>
+          <header><div><strong>{selected.key}</strong><span>{selected.point.timestamp} · {selected.point.target ?? "图片"}</span></div><div className="trend-point-actions"><b>{selected.point.value.toFixed(2)} {selected.point.unit}</b><button className="command quiet" disabled={!selected.point.annotation_id} onClick={() => onRemeasure(selected.point)}><Ruler size={14} />重新测量这张图片</button></div></header>
+          {selected.point.image_url ? <img src={selected.point.image_url} alt={`${selected.key} ${selected.point.timestamp} 标注图`} /> : <div className="remote-empty">这条旧测量记录没有保存标注图。重新打开并保存后即可显示。</div>}
+        </> : <div className="trend-select-prompt"><ImagePlus size={28} /><strong>选择一个曲线数据点</strong><span>对应的测量标注图会显示在这里</span></div>}
+      </section>
+    </div>
+  );
+}
+
+interface RemoteQueueTarget { capture: RemoteCapture; imageKey: string }
+
+function localDateInput(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function RemoteHome({ onReady, onSetup, refreshToken }: { onReady: (session: SessionResponse, names: string[], queue?: RemoteQueueTarget[]) => void; onSetup: () => void; refreshToken: number }) {
+  const [data, setData] = useState<RemoteCaptureResponse | null>(null);
+  const [series, setSeries] = useState<Record<string, SeriesPoint[]>>({});
+  const [savedRecords, setSavedRecords] = useState<SavedAnnotationRecord[]>([]);
+  const [tab, setTab] = useState<"captures" | "trends" | "records">("captures");
+  const [busy, setBusy] = useState(false);
+  const [opening, setOpening] = useState<string | null>(null);
+  const [calibrationFile, setCalibrationFile] = useState<File | undefined>();
+  const [onlyUnmeasured, setOnlyUnmeasured] = useState(true);
+  const [keyFilter, setKeyFilter] = useState("key3");
+  const [error, setError] = useState("");
+  const today = useMemo(() => new Date(), []);
+  const defaultStart = useMemo(() => { const date = new Date(today); date.setDate(date.getDate() - 29); return date; }, [today]);
+  const [startDate, setStartDate] = useState(localDateInput(defaultStart));
+  const [endDate, setEndDate] = useState(localDateInput(today));
+  const [appliedRange, setAppliedRange] = useState({ start: localDateInput(defaultStart), end: localDateInput(today) });
+  const reload = useCallback(async () => {
+    setBusy(true); setError("");
+    try {
+      setData(await listRemoteCaptures(3331, appliedRange.start, appliedRange.end));
+      setSeries((await loadSeries(3331)).series);
+      setSavedRecords((await listSavedAnnotations(3331)).records);
+    }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "远程数据读取失败"); }
+    finally { setBusy(false); }
+  }, [appliedRange]);
+  useEffect(() => { void reload(); }, [reload, refreshToken]);
+  const dailyCaptures = useMemo(() => {
+    const closestByDay = new Map<string, { capture: RemoteCapture; distance: number }>();
+    for (const capture of data?.captures ?? []) {
+      if (keyFilter !== "all" && !capture.images[keyFilter]) continue;
+      const captured = new Date(capture.captured_at.replace(" ", "T"));
+      if (Number.isNaN(captured.getTime())) continue;
+      const day = localDateInput(captured);
+      const target = new Date(captured);
+      target.setHours(10, 0, 0, 0);
+      const distance = Math.abs(captured.getTime() - target.getTime());
+      const current = closestByDay.get(day);
+      if (!current || distance < current.distance) closestByDay.set(day, { capture, distance });
+    }
+    return [...closestByDay.values()]
+      .map((item) => item.capture)
+      .sort((left, right) => left.captured_at.localeCompare(right.captured_at));
+  }, [data, keyFilter]);
+  const measurementQueue = useMemo<RemoteQueueTarget[]>(() => dailyCaptures.flatMap((capture) =>
+    ["key1", "key2", "key3", "key4"]
+      .filter((key) => capture.images[key])
+      .filter((key) => keyFilter === "all" || key === keyFilter)
+      .filter((key) => !onlyUnmeasured || !capture.images[key].measurement.measured)
+      .map((imageKey) => ({ capture, imageKey })),
+  ), [dailyCaptures, keyFilter, onlyUnmeasured]);
+  const visibleCaptureIds = useMemo(() => new Set(measurementQueue.map((target) => target.capture.id)), [measurementQueue]);
+  const openCapture = async (capture: RemoteCapture) => {
+    setOpening(capture.id); setError("");
+    try {
+      const session = await createRemoteStereo(capture, calibrationFile);
+      onReady(session, [`key3 · ${capture.captured_at}`, `key2 · ${capture.captured_at}`]);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "无法打开双目记录"); }
+    finally { setOpening(null); }
+  };
+  const openMonocular = async (capture: RemoteCapture, imageKey: string) => {
+    const operation = `${capture.id}-${imageKey}`;
+    setOpening(operation); setError("");
+    try {
+      const session = await createRemoteMonocular(capture, imageKey);
+      const index = measurementQueue.findIndex((target) => target.capture.id === capture.id && target.imageKey === imageKey);
+      onReady(session, [`${imageKey} · ${capture.captured_at}`], index >= 0 ? measurementQueue.slice(index + 1) : []);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "无法打开单目记录"); }
+    finally { setOpening(null); }
+  };
+  const removeSavedRecord = async (record: SavedAnnotationRecord) => {
+    if (!window.confirm(`确定删除 ${record.captured_at ?? record.id} 的测量结果吗？`)) return;
+    setError("");
+    try {
+      await deleteSavedAnnotation(3331, record.id);
+      await reload();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "删除测量结果失败"); }
+  };
+  const remeasureSeriesPoint = async (point: SeriesPoint) => {
+    if (!point.annotation_id) return;
+    setOpening(point.annotation_id); setError("");
+    try {
+      const session = await reopenSavedAnnotation(3331, point.annotation_id);
+      onReady(session, [`${point.target ?? "图片"} · ${point.timestamp}`]);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "无法重新打开测量图片"); }
+    finally { setOpening(null); }
+  };
+  return (
+    <main className="remote-shell">
+      <header className="remote-header">
+        <div className="product-mark"><ScanLine size={24} /><span>PicMeasure 数据工作台</span></div>
+        <div className="remote-device"><Database size={15} /><strong>{data?.device.name ?? "设备 3331"}</strong><span>ID 3331 · {data?.device.status ?? "连接中"}</span></div>
+        <a className="command export-bundle" href={deviceExportUrl(3331)}><Download size={15} />导出 Excel + 测量图片</a>
+        <button className="command quiet" onClick={onSetup}>标定与本地工具</button>
+      </header>
+      <nav className="remote-tabs">
+        <button className={tab === "captures" ? "active" : ""} onClick={() => setTab("captures")}><Camera size={16} />月度测量任务</button>
+        <button className={tab === "trends" ? "active" : ""} onClick={() => setTab("trends")}><ChartNoAxesCombined size={16} />测量曲线</button>
+        <button className={tab === "records" ? "active" : ""} onClick={() => setTab("records")}><Ruler size={16} />保存结果</button>
+        <button className="refresh" onClick={() => void reload()} disabled={busy}><RefreshCw size={15} className={busy ? "spinning" : ""} />刷新</button>
+      </nav>
+      <div className="remote-calibration">
+        <div><strong>双目标定文件</strong><span>{calibrationFile ? `本次使用：${calibrationFile.name}` : "默认使用根目录 stereo.toml"}</span></div>
+        <label className="command quiet calibration-picker"><Upload size={15} />选择其他 TOML<input type="file" accept=".toml,application/toml,text/plain" onChange={(event) => setCalibrationFile(event.target.files?.[0])} /></label>
+        {calibrationFile && <button className="text-command" onClick={() => setCalibrationFile(undefined)}>恢复默认</button>}
+      </div>
+      {error && <div className="remote-error"><XCircle size={16} />{error}</div>}
+      {tab === "trends" ? <section className="trend-view"><div><h1>设备 3331 语义测量趋势</h1><p>按树枝、叶片等 key 汇总本地保存的长度结果。</p></div><TrendChart series={series} onRemeasure={(point) => void remeasureSeriesPoint(point)} /></section> : tab === "records" ? (
+        <section className="records-view">
+          <div className="capture-title"><div><h1>本地保存结果</h1><p>删除后，对应的曲线数据、已测量状态和标注图片也会移除。</p></div><strong>{savedRecords.length} 条记录</strong></div>
+          <div className="records-table-wrap"><table className="records-table"><thead><tr><th>采集时间</th><th>图片</th><th>模式</th><th>测量结果</th><th>保存时间</th><th>操作</th></tr></thead><tbody>
+            {savedRecords.map((record) => <tr key={record.id}><td>{record.captured_at ?? "—"}</td><td>{record.target}</td><td>{record.mode === "stereo" ? "双目" : "单目"}</td><td>{record.measurements.length ? record.measurements.map((item) => `${item.key || "未命名"}: ${typeof item.value === "number" ? item.value.toFixed(2) : "—"} ${item.unit ?? ""}`).join("；") : "无测量项"}</td><td>{record.saved_at ?? "—"}</td><td><button className="record-delete" onClick={() => void removeSavedRecord(record)}><Trash2 size={14} />删除</button></td></tr>)}
+          </tbody></table>{savedRecords.length === 0 && <div className="remote-empty">目前没有本地保存的测量结果。</div>}</div>
+        </section>
+      ) : (
+        <section className="capture-view">
+          <div className="capture-title"><div><h1>月度测量任务</h1><p>{appliedRange.start} 至 {appliedRange.end} · key3 · 每天最接近上午 10:00 · 从旧到新</p></div><strong>{measurementQueue.length} 天待测量</strong></div>
+          <div className="queue-controls">
+            <label>开始日期<input type="date" value={startDate} max={endDate} onChange={(event) => setStartDate(event.target.value)} /></label>
+            <label>结束日期<input type="date" value={endDate} min={startDate} onChange={(event) => setEndDate(event.target.value)} /></label>
+            <button className="command quiet range-command" disabled={busy || !startDate || !endDate || startDate > endDate} onClick={() => setAppliedRange({ start: startDate, end: endDate })}>查询</button>
+            <label><input type="checkbox" checked={onlyUnmeasured} onChange={(event) => setOnlyUnmeasured(event.target.checked)} />只看未测量</label>
+            <label>图片<select value={keyFilter} onChange={(event) => setKeyFilter(event.target.value)}><option value="all">全部 key</option><option value="key1">key1</option><option value="key2">key2</option><option value="key3">key3</option><option value="key4">key4</option></select></label>
+          </div>
+          <div className="capture-list">{dailyCaptures.filter((capture) => visibleCaptureIds.has(capture.id)).map((capture) => (
+            <article className="capture-card" key={capture.id}>
+              <div className="capture-meta"><strong>{capture.captured_at}</strong><span className={capture.stereo_measurement.measured ? "measured" : "pending"}>{capture.stereo_measurement.measured ? "双目已测量" : capture.stereo_ready ? "双目未测量" : "双目图片不完整"}</span></div>
+              <div className="capture-images">
+                {(["key1", "key2", "key3", "key4"] as const).map((key) => capture.images[key] && (keyFilter === "all" || keyFilter === key) && (!onlyUnmeasured || !capture.images[key].measurement.measured) ? <figure key={key} className={capture.images[key].measurement.measured ? "image-measured" : ""}>
+                  <img src={remoteImageUrl(capture.device_id, capture.images[key].path)} loading="lazy" />
+                  <figcaption><span><b>{key}</b><em className={capture.images[key].measurement.measured ? "measured" : "pending"}>{capture.images[key].measurement.measured ? `已测量 · ${capture.images[key].measurement.branch_count ?? 0} 项` : "未测量"}</em></span><button disabled={opening !== null} onClick={() => void openMonocular(capture, key)}>{opening === `${capture.id}-${key}` ? "打开中…" : capture.images[key].measurement.measured ? "继续修改" : "开始测量"}</button></figcaption>
+                </figure> : null)}
+              </div>
+              <button className="stereo-row-action" disabled={!capture.stereo_ready || opening !== null} onClick={() => void openCapture(capture)}>{opening === capture.id ? "正在下载并对齐…" : capture.stereo_measurement.measured ? "继续修改双目结果" : "测量 key3 + key2 双目"}</button>
+            </article>
+          ))}</div>
+          {!busy && measurementQueue.length === 0 && <div className="remote-empty">当前筛选条件下没有待测量图片。</div>}
+          {busy && !data && <div className="remote-empty">正在连接远程数据库并读取 OSS 图片…</div>}
+        </section>
+      )}
+    </main>
+  );
+}
+
 export default function App() {
   const [session, setSession] = useState<SessionResponse | null>(null);
   const [calibration, setCalibration] = useState<StereoCalibrationResult | null>(null);
   const [names, setNames] = useState<string[]>([]);
-  return calibration ? (
-    <CalibrationResult result={calibration} onClose={() => setCalibration(null)} />
-  ) : session ? (
-    <Workbench session={session} names={names} onClose={() => setSession(null)} />
-  ) : (
-    <UploadScreen onReady={(next, nextNames) => { setSession(next); setNames(nextNames); }} onCalibrated={setCalibration} />
-  );
+  const [showSetup, setShowSetup] = useState(false);
+  const [measurementQueue, setMeasurementQueue] = useState<RemoteQueueTarget[]>([]);
+  const [remoteRefreshToken, setRemoteRefreshToken] = useState(0);
+  const openNextMeasurement = async () => {
+    const [next, ...rest] = measurementQueue;
+    if (!next) {
+      setSession(null);
+      return;
+    }
+    const nextSession = await createRemoteMonocular(next.capture, next.imageKey);
+    setSession(nextSession);
+    setNames([`${next.imageKey} · ${next.capture.captured_at}`]);
+    setMeasurementQueue(rest);
+  };
+  const overlayOpen = Boolean(calibration || session || showSetup);
+  return <>
+    <div className={overlayOpen ? "preserved-home hidden" : "preserved-home"}>
+      <RemoteHome refreshToken={remoteRefreshToken} onReady={(next, nextNames, queue = []) => { setSession(next); setNames(nextNames); setMeasurementQueue(queue); }} onSetup={() => setShowSetup(true)} />
+    </div>
+    {calibration ? (
+      <div className="app-overlay"><CalibrationResult result={calibration} onClose={() => setCalibration(null)} /></div>
+    ) : session ? (
+      <div className="app-overlay"><Workbench key={session.session_id} session={session} names={names} onClose={() => { setSession(null); setMeasurementQueue([]); }} onSaved={() => setRemoteRefreshToken((value) => value + 1)} onSaveNext={session.mode === "monocular" && session.source?.kind === "remote" ? openNextMeasurement : undefined} onSkipNext={session.mode === "monocular" && session.source?.kind === "remote" ? openNextMeasurement : undefined} nextMeasurementLabel={measurementQueue[0]?.imageKey} /></div>
+    ) : showSetup ? (
+      <div className="app-overlay setup-with-back"><button className="setup-back" onClick={() => setShowSetup(false)}><ChevronLeft size={16} />返回远程数据</button><UploadScreen onReady={(next, nextNames) => { setSession(next); setNames(nextNames); }} onCalibrated={setCalibration} /></div>
+    ) : null}
+  </>;
 }

@@ -17,6 +17,8 @@ dependencies = [
     "fastapi>=0.116.0",
     "uvicorn[standard]>=0.35.0",
     "python-multipart>=0.0.20",
+    "pymysql>=1.1.1",
+    "openpyxl>=3.1.5",
 ]
 
 [project.optional-dependencies]

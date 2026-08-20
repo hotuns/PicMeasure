@@ -15,6 +15,8 @@ export interface BallCandidate {
   area_ratio: number;
   pixels_per_unit: number;
   method: string;
+  saved_at?: string;
+  image_key?: string;
 }
 
 export interface SessionResponse {
@@ -24,6 +26,16 @@ export interface SessionResponse {
   ball_candidates: BallCandidate[] | { left: BallCandidate[]; right: BallCandidate[] };
   known_ball_diameter: number;
   unit: "cm" | "mm";
+  source?: RemoteSource;
+  saved_calibration?: BallCandidate | null;
+  existing_branches?: BranchResult[];
+  alignment?: {
+    source: "features" | "configured";
+    matches: number;
+    inliers: number;
+    median_vertical_error_px: number;
+    p90_vertical_error_px: number;
+  };
 }
 
 export interface PointPreview {
@@ -48,10 +60,80 @@ export interface DiameterResult {
 
 export interface BranchResult {
   id: number;
+  key: string;
   points: Point[];
   rightPoints: Point[];
   points3d: Point3D[];
   diameters: DiameterResult[];
+}
+
+export interface RemoteImageRecord {
+  record_id: number;
+  table: string;
+  key: string;
+  path: string;
+  timestamp: string;
+  measurement: MeasurementStatus;
+}
+
+export interface MeasurementStatus {
+  measured: boolean;
+  saved_at?: string;
+  branch_count?: number;
+  path?: string;
+}
+
+export interface RemoteCapture {
+  id: string;
+  device_id: number;
+  captured_at: string;
+  images: Record<string, RemoteImageRecord>;
+  stereo_ready: boolean;
+  stereo_measurement: MeasurementStatus;
+}
+
+export interface RemoteCaptureResponse {
+  device: { id: number; name: string; status: string };
+  captures: RemoteCapture[];
+}
+
+export interface RemoteStereoSource {
+  kind: "remote";
+  device_id: number;
+  capture_id: string;
+  captured_at: string;
+  left: { key: "key3"; path: string };
+  right: { key: "key2"; path: string };
+}
+
+export interface RemoteMonocularSource {
+  kind: "remote";
+  device_id: number;
+  capture_id: string;
+  captured_at: string;
+  image: { key: string; path: string };
+}
+
+export type RemoteSource = RemoteStereoSource | RemoteMonocularSource;
+
+export interface SeriesPoint {
+  timestamp: string;
+  value: number;
+  unit: string;
+  capture_id?: string;
+  annotation_id?: string;
+  target?: string;
+  image_url?: string | null;
+}
+
+export interface SavedAnnotationRecord {
+  id: string;
+  captured_at?: string;
+  saved_at?: string;
+  mode?: string;
+  target: string;
+  measurements: Array<{ key?: string; value?: number; unit?: string }>;
+  image_url?: string | null;
 }
 
 export interface CameraCalibrationResult {
