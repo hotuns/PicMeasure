@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from pathlib import Path
@@ -16,7 +17,7 @@ import pymysql
 from pymysql.cursors import DictCursor
 
 TABLE_NAME = re.compile(r"^device_data_\d+$")
-DEFAULT_CONFIG = Path("/Users/hotuns/Documents/植物所数据迁移/plant_staging_config.json")
+CONFIG_FILENAME = "remote_config.json"
 
 
 @dataclass(frozen=True)
@@ -32,8 +33,15 @@ class RemoteSettings:
 
 
 def load_remote_settings() -> RemoteSettings:
-    """Load settings from environment variables or the migration config."""
-    config_path = Path(os.environ.get("PICMEASURE_REMOTE_CONFIG", DEFAULT_CONFIG))
+    """Load settings from the project or packaged executable directory."""
+    application_dir = (
+        Path(sys.executable).resolve().parent
+        if getattr(sys, "frozen", False)
+        else Path.cwd()
+    )
+    config_path = Path(
+        os.environ.get("PICMEASURE_REMOTE_CONFIG", application_dir / CONFIG_FILENAME)
+    )
     raw: dict[str, Any] = {}
     if config_path.is_file():
         raw = json.loads(config_path.read_text(encoding="utf-8"))
@@ -55,7 +63,9 @@ def load_remote_settings() -> RemoteSettings:
 
 def _connect(settings: RemoteSettings) -> pymysql.Connection:
     if not all((settings.host, settings.user, settings.database, settings.oss_base_url)):
-        raise RuntimeError("远程数据配置不完整，请配置数据库和 OSS 地址")
+        raise RuntimeError(
+            f"远程数据配置不完整，请在程序目录配置 {CONFIG_FILENAME}"
+        )
     return pymysql.connect(
         host=settings.host,
         port=settings.port,

@@ -31,6 +31,7 @@ if errorlevel 1 (
 echo.
 echo === Build complete ===
 copy /y stereo.toml dist\PicMeasure\stereo.toml >nul
+if exist remote_config.json copy /y remote_config.json dist\PicMeasure\remote_config.json >nul
 echo Distribution folder: dist\PicMeasure\
 echo Run:                 dist\PicMeasure\PicMeasure.exe
 echo.

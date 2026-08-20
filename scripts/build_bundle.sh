@@ -18,6 +18,7 @@ uv run pyinstaller \
 
 cp -f stereo.toml dist/PicMeasure/stereo.toml
 if [ -f config.toml ]; then cp -f config.toml dist/PicMeasure/config.toml; fi
+if [ -f remote_config.json ]; then cp -f remote_config.json dist/PicMeasure/remote_config.json; fi
 cp -f scripts/launch_bundle.command dist/PicMeasure/"启动 PicMeasure.command"
 chmod +x dist/PicMeasure/"启动 PicMeasure.command"
 

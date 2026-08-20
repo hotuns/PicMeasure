@@ -1,0 +1,10 @@
+{
+  "thcpn": {
+    "host": "database.example.com",
+    "port": 3306,
+    "user": "picmeasure",
+    "password": "replace-with-password",
+    "database": "thcpn"
+  },
+  "oss_base_url": "https://oss.example.com/"
+}

@@ -16,6 +16,22 @@ uv run picmeasure gui
 Tkinter and Matplotlib interface remains available as `uv run picmeasure legacy-gui` during
 the migration period.
 
+## Remote database configuration
+
+Copy `remote_config.example.json` to `remote_config.json` in the project root, then fill in
+the THCPN MySQL and OSS values. `remote_config.json` contains credentials and is excluded
+from Git.
+
+```text
+remote_config.example.json -> remote_config.json
+```
+
+When running from source, PicMeasure reads this file from the current project directory.
+The packaged application reads it from the directory containing `PicMeasure.exe` or the
+macOS `PicMeasure` executable. It does not read configuration from another project or from
+a machine-specific absolute path. The individual `PICMEASURE_DB_*` and
+`PICMEASURE_OSS_BASE_URL` environment variables can still override values when needed.
+
 ## Frontend development
 
 ```bash
@@ -51,6 +67,10 @@ npm run build
 cd ..
 build.bat
 ```
+
+If `remote_config.json` exists in the project root, `build.bat` copies it beside the EXE.
+Before building on another computer, create this file from `remote_config.example.json`,
+or place it manually in `dist\PicMeasure` after the build.
 
 The result is written to:
 
