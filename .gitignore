@@ -53,6 +53,7 @@ node_modules/
 web/node_modules/
 *.tsbuildinfo
 remote_config.json
+data/
 
 # pytest
 .coverage
